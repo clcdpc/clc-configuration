@@ -8,6 +8,33 @@ namespace Clc.Configuration.Tests;
 public sealed class GenericHostConfigurationTests
 {
     [Fact]
+    public void GettingApplicationPathsRejectsANullBuilder()
+    {
+        var error = Assert.Throws<ArgumentNullException>(() =>
+            ClcConfigurationBuilderExtensions.GetClcApplicationPaths(null!));
+        Assert.Equal("builder", error.ParamName);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GettingApplicationPathsRequiresASuccessfulRegistrationOfTheCorrectType(bool web)
+    {
+        IHostApplicationBuilder builder = web ? WebApplication.CreateBuilder() : Host.CreateApplicationBuilder();
+
+        var error = Assert.Throws<InvalidOperationException>(() => builder.GetClcApplicationPaths());
+        Assert.Contains("has not successfully initialized this builder", error.Message);
+        Assert.Contains("AddClcConfiguration", error.Message);
+        Assert.Contains("AddClcConfigurationWithBootstrap", error.Message);
+        Assert.Contains("application directory name", error.Message);
+
+        builder.Properties[typeof(ClcApplicationPaths)] = "invalid registration";
+        Assert.Throws<InvalidOperationException>(() => builder.GetClcApplicationPaths());
+        builder.Properties[typeof(ClcApplicationPaths)] = null!;
+        Assert.Throws<InvalidOperationException>(() => builder.GetClcApplicationPaths());
+    }
+
+    [Fact]
     public void WorkerLoadsTheSameAuthoritativeSnapshotAsWebStartup()
     {
         using var fixture = ClcConfigurationTesting.CreateJsonFile("""
@@ -68,6 +95,8 @@ public sealed class GenericHostConfigurationTests
         Assert.Equal(ClcConfigurationErrorReason.MissingFile, failure.Reason);
         Assert.Equal(paths.ConfigurationFilePath, failure.FilePath);
         Assert.False(Directory.Exists(paths.ApplicationDataDirectory));
+        Assert.False(((IHostApplicationBuilder)builder).Properties.ContainsKey(typeof(ClcApplicationPaths)));
+        Assert.Throws<InvalidOperationException>(() => builder.GetClcApplicationPaths());
     }
 
     [Fact]

@@ -5,6 +5,26 @@ namespace Clc.Configuration;
 /// <summary>Loads application configuration from the CLC ProgramData convention.</summary>
 public static class ClcConfigurationBuilderExtensions
 {
+    /// <summary>Returns the application paths recorded by successful configuration initialization on this builder.</summary>
+    /// <param name="builder">The configured application host builder.</param>
+    /// <returns>The paths established by the latest successful configuration initialization.</returns>
+    /// <remarks>Does not load configuration or access the filesystem.</remarks>
+    /// <exception cref="ArgumentNullException">The builder is null.</exception>
+    /// <exception cref="InvalidOperationException">Configuration has not successfully initialized this builder.</exception>
+    public static ClcApplicationPaths GetClcApplicationPaths(this IHostApplicationBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        if (builder.Properties.TryGetValue(typeof(ClcApplicationPaths), out var value) &&
+            value is ClcApplicationPaths paths)
+        {
+            return paths;
+        }
+
+        throw new InvalidOperationException(
+            "CLC configuration has not successfully initialized this builder. " +
+            "Call AddClcConfiguration or AddClcConfigurationWithBootstrap with the application directory name before retrieving application paths.");
+    }
+
     /// <summary>
     /// Opts into first-run template copying and REPLACE_ME detection before loading configuration.
     /// A newly created file always throws ConfigurationCreated so it can be reviewed before startup.
@@ -37,9 +57,8 @@ public static class ClcConfigurationBuilderExtensions
         string? exampleConfigurationPath = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        var path = ExternalConfigurationLoader.ResolvePath(applicationDirectoryName);
-        ConfigurationBootstrap.AddFromFile(builder, applicationDirectoryName, path, exampleConfigurationPath);
-        return builder;
+        var paths = ClcApplicationPaths.Resolve(applicationDirectoryName);
+        return AddClcConfigurationWithBootstrap(builder, applicationDirectoryName, paths, exampleConfigurationPath);
     }
 
     /// <summary>
@@ -71,8 +90,29 @@ public static class ClcConfigurationBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        var path = ExternalConfigurationLoader.ResolvePath(applicationDirectoryName);
-        ExternalConfigurationLoader.AddFromFile(builder, applicationDirectoryName, path);
+        var paths = ClcApplicationPaths.Resolve(applicationDirectoryName);
+        return AddClcConfiguration(builder, applicationDirectoryName, paths);
+    }
+
+    // Shared initialization paths let tests use resolved temporary paths without a public root override.
+    internal static IHostApplicationBuilder AddClcConfiguration(
+        IHostApplicationBuilder builder,
+        string applicationDirectoryName,
+        ClcApplicationPaths paths)
+    {
+        ExternalConfigurationLoader.AddFromFile(builder, applicationDirectoryName, paths.ConfigurationFilePath);
+        builder.Properties[typeof(ClcApplicationPaths)] = paths;
+        return builder;
+    }
+
+    internal static IHostApplicationBuilder AddClcConfigurationWithBootstrap(
+        IHostApplicationBuilder builder,
+        string applicationDirectoryName,
+        ClcApplicationPaths paths,
+        string? exampleConfigurationPath)
+    {
+        ConfigurationBootstrap.AddFromFile(builder, applicationDirectoryName, paths.ConfigurationFilePath, exampleConfigurationPath);
+        builder.Properties[typeof(ClcApplicationPaths)] = paths;
         return builder;
     }
 }
