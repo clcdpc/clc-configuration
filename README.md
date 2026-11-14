@@ -38,6 +38,22 @@ public static class Program
 
 The application directory name belongs in `Program.cs` so the deployment convention is visible alongside startup. It must be one portable directory name. Absolute paths, path separators, traversal names, invalid filename characters, and Windows reserved device names (including names followed by extensions) are rejected.
 
+## Retrieve the configured application's paths
+
+Configuration initialization records the resolved `ClcApplicationPaths` on the host builder:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddClcConfiguration("clc-ssrs-web");
+
+var paths = builder.GetClcApplicationPaths();
+```
+
+Provide the application directory name once during configuration initialization. After `AddClcConfiguration` or `AddClcConfigurationWithBootstrap` succeeds, other libraries can retrieve the established paths from that builder without independently resolving or defining the application identity. This also works with Generic Host builders.
+
+`GetClcApplicationPaths` does not load configuration or access the filesystem. Calling it before successful initialization throws an explicit `InvalidOperationException` explaining which initialization methods to call. Paths belong to that individual builder: a later successful initialization updates them, while a failed attempt (including bootstrap's `ConfigurationCreated` stop) preserves any previous successful paths.
+
 ## Generic Host and Windows workers
 
 The same extension supports `IHostApplicationBuilder`, including `HostApplicationBuilder`:
