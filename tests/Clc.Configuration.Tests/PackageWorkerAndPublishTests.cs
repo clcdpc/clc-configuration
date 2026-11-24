@@ -137,6 +137,14 @@ public sealed partial class PackageConsumerTests
         Assert.Equal(ClcApplicationPaths.Resolve("clc-configuration-worker").ApplicationDataDirectory + Environment.NewLine,
             discovery.StandardOutput);
         Assert.Empty(discovery.StandardError);
+        var previewName = $"clc-worker-preview-{Guid.NewGuid():N}";
+        File.WriteAllText(Path.Combine(publishRoot, "sample", "appsettings.json"),
+            $$"""{"ClcConfiguration":{ "ApplicationDirectoryName":"{{previewName}}" } }""");
+        var preview = await RunDotnetAsync(temporaryDirectory.Path,
+            [sampleAssembly, "--clc-appdata-directory"], packageCache, dotnet: runtimeHost);
+        Assert.Equal(ClcApplicationPaths.Resolve(previewName).ApplicationDataDirectory + Environment.NewLine, preview.StandardOutput);
+        Assert.Empty(preview.StandardError);
+        Assert.False(Directory.Exists(ClcApplicationPaths.Resolve(previewName).ApplicationDataDirectory));
         using (var runtime = JsonDocument.Parse(File.ReadAllText(
             Path.Combine(publishRoot, "sample", "Clc.Configuration.Worker.runtimeconfig.json"))))
         {

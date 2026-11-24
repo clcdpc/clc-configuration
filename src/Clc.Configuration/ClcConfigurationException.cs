@@ -17,7 +17,8 @@ public enum ClcConfigurationErrorReason
     UnreplacedPlaceholder,
     ExampleFileMissing,
     ExampleFileUnreadable,
-    BootstrapFailed
+    BootstrapFailed,
+    InvalidApplicationDirectoryOverride
 }
 
 /// <summary>A redacted external configuration failure that remains compatible with InvalidOperationException handlers.</summary>
@@ -90,6 +91,8 @@ public sealed class ClcConfigurationException : InvalidOperationException
                 $"Configuration bootstrap example file cannot be read: '{safePath}'. Check the example path and read access for the caller's identity.",
             ClcConfigurationErrorReason.BootstrapFailed =>
                 $"Configuration bootstrap could not create the external file: '{safePath}'. Existing files are never overwritten. Check directory and file permissions and review any incomplete file before restarting.",
+            ClcConfigurationErrorReason.InvalidApplicationDirectoryOverride =>
+                $"Invalid or ambiguous ClcConfiguration:ApplicationDirectoryName in '{safePath}'. Specify one portable directory name in the ClcConfiguration object.",
             _ => throw new ArgumentOutOfRangeException(nameof(reason))
         };
 

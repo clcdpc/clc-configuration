@@ -6,9 +6,10 @@ namespace Clc.Configuration;
 public static class ClcConfigurationReader
 {
     /// <summary>
-    /// Loads the conventional ProgramData configuration file for an application.
+    /// Loads the conventional ProgramData configuration file for the supplied directory name.
     /// </summary>
     /// <param name="applicationDirectoryName">One portable directory name beneath the operating-system common application data directory.</param>
+    /// <remarks>This explicit operation does not inspect appsettings.json in the calling application.</remarks>
     /// <returns>An in-memory configuration snapshot.</returns>
     public static IConfiguration Load(string applicationDirectoryName)
     {
@@ -23,6 +24,7 @@ public static class ClcConfigurationReader
     /// </summary>
     /// <param name="applicationDirectoryName">One portable application directory name, validated using the startup convention.</param>
     /// <param name="filePath">The absolute path to the JSON file.</param>
+    /// <remarks>This explicit operation does not inspect appsettings.json in the calling application.</remarks>
     /// <returns>An in-memory configuration snapshot.</returns>
     public static IConfiguration LoadFromFile(string applicationDirectoryName, string filePath) =>
         ExternalConfigurationLoader.LoadFromFile(applicationDirectoryName, filePath);

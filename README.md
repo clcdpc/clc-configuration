@@ -17,7 +17,7 @@ public static class Program
 
     public static int Main(string[] args)
     {
-        // Optional: opt in before logging, host construction, or configuration reads.
+        // Optional: opt in before logging, host construction, or operational configuration reads.
         if (ClcConfigurationCommandLine.TryHandle(args, ApplicationDirectoryName, out var exitCode))
         {
             return exitCode;
@@ -36,11 +36,29 @@ public static class Program
 }
 ```
 
-The application directory name belongs in `Program.cs` so the deployment convention is visible alongside startup. It must be one portable directory name. Absolute paths, path separators, traversal names, invalid filename characters, and Windows reserved device names (including names followed by extensions) are rejected.
+The default application directory name belongs in `Program.cs` so the deployment convention is visible alongside startup. It must be one portable directory name. Absolute paths, path separators, traversal names, invalid filename characters, and Windows reserved device names (including names followed by extensions) are rejected.
+
+## Optional deployment-specific directory name
+
+Two deployments can run identical binaries in **Production** and use different operational settings. For example, an application that calls `AddClcConfiguration("clc_api")` ordinarily reads `C:\ProgramData\clc_api\Config\application.json`. In the preview deployment only, place this in the regular `appsettings.json` beside the published application:
+
+```json
+{
+  "ClcConfiguration": {
+    "ApplicationDirectoryName": "clc_api-preview"
+  }
+}
+```
+
+Preview now reads `C:\ProgramData\clc_api-preview\Config\application.json`. Startup, first-run bootstrap, and command-line discovery all read the nested property directly from `<AppContext.BaseDirectory>/appsettings.json`. The working directory, host content root, environment-specific files, User Secrets, environment variables, command-line values, and previously registered providers cannot select the directory. The host keeps its original environment and content root.
+
+An absent file, section, or property uses the code-defined default. A present file must be a readable JSON object. Ordinary JSON comments, trailing commas, and case-insensitive property names are supported. The same bounded JSON reader handles both files (4 MiB, maximum depth 32). The section must be an object and the property must be a string that meets the same portable-name rules as the required default. Explicit nulls, empty or whitespace-only names, invalid names, and duplicate case-insensitive definitions of either the section or the property stop resolution. Values are validated as supplied.
+
+An invalid override stops initialization before either operational directory is used. If the host itself reads malformed JSON while creating its builder, it can report its own parse error before the CLC extension runs. A valid override selects only that directory, even if the default has a working configuration. Normal startup fails if the selected operational file is missing. Bootstrap can create it there. The identity lookup adds no provider or watcher. Unrelated local settings are discarded with the existing providers, subject to the listener controls below. An identically named key in the external file is ordinary application data. Restart the application after changing either file.
 
 ## Retrieve the configured application's paths
 
-Configuration initialization records the resolved `ClcApplicationPaths` on the host builder:
+Configuration initialization records the effective deployment's `ClcApplicationPaths` on the host builder:
 
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
@@ -50,7 +68,7 @@ builder.AddClcConfiguration("clc-ssrs-web");
 var paths = builder.GetClcApplicationPaths();
 ```
 
-Provide the application directory name once during configuration initialization. After `AddClcConfiguration` or `AddClcConfigurationWithBootstrap` succeeds, other libraries can retrieve the established paths from that builder without independently resolving or defining the application identity. This also works with Generic Host builders.
+Provide the application directory name once during configuration initialization. After `AddClcConfiguration` or `AddClcConfigurationWithBootstrap` succeeds, downstream libraries such as Clc.Logging can retrieve the established paths from that builder without independently resolving or defining the application identity. This also works with Generic Host builders.
 
 `GetClcApplicationPaths` does not load configuration or access the filesystem. Calling it before successful initialization throws an explicit `InvalidOperationException` explaining which initialization methods to call. Paths belong to that individual builder: a later successful initialization updates them, while a failed attempt (including bootstrap's `ConfigurationCreated` stop) preserves any previous successful paths.
 
@@ -69,7 +87,7 @@ using var host = builder.Build();
 await host.RunAsync();
 ```
 
-`Worker` is application-owned. Call the extension before service registration that reads configuration. The web and worker overloads use the same file parser, provider replacement, retained listener controls, and restart-only snapshot. Host environment and content root have already been established by the host builder. No web server is constructed by this overload, and no production path override is added. The early `--clc-appdata-directory` opt-in also works for workers; see the [Worker sample](samples/Clc.Configuration.Worker).
+`Worker` is application-owned. Call the extension before service registration that reads configuration. The web and worker overloads use the same file parser, provider replacement, retained listener controls, and restart-only snapshot. Host environment and content root have already been established by the host builder. Workers use the same optional deployment directory name. The early `--clc-appdata-directory` opt-in also works for workers; see the [Worker sample](samples/Clc.Configuration.Worker).
 
 For a Windows service, retain the application's usual `AddWindowsService` registration and `Microsoft.Extensions.Hosting.WindowsServices` dependency. This library does not install or manage services. Workers need only the .NET 10 base runtime. Reference `Microsoft.Extensions.Hosting` in the worker application to construct and run its host; the library depends on the hosting abstractions and configuration packages. Web applications continue to get ASP.NET Core from the Web SDK. Migrating a worker that currently merges environment files or variables requires explicitly adopting the authoritative-file contract below.
 
@@ -83,7 +101,7 @@ The library resolves the OS-level `Environment.SpecialFolder.CommonApplicationDa
 <CommonApplicationData>/<application directory name>/Config/application.json
 ```
 
-For example, `AddClcConfiguration("clc-ssrs-web")` reads the `clc-ssrs-web/Config/application.json` file beneath ProgramData on Windows and the common application data directory on Linux. The same path is used in every ASP.NET Core environment. Normal loading does not select environment-specific files, create a replacement file, or provide a production path override.
+By default, `AddClcConfiguration("clc-ssrs-web")` reads the `clc-ssrs-web/Config/application.json` file beneath ProgramData on Windows and the common application data directory on Linux. The same path is used in every ASP.NET Core environment. Normal loading does not select environment-specific files, create a replacement file, or change the CommonApplicationData root.
 
 Provision `application.json` before starting the application and grant the application identity read access. Alternatively, explicitly opt into the starter-file helper below. The package does not supply application-specific settings.
 
@@ -97,7 +115,7 @@ builder.AddClcConfigurationWithBootstrap(ApplicationDirectoryName);
 // builder.AddClcConfigurationWithBootstrap(ApplicationDirectoryName, "templates/example.json");
 ```
 
-If the conventional `Config/application.json` does not exist, the helper copies `<ContentRootPath>/config/example.json` to it, creating the application's ProgramData directory and `Config` directory as needed. Paths are not relative to the current working directory unless that is the host's content root. An existing operational file is never overwritten, merged, or dependent on the example remaining available.
+If the effective deployment's `Config/application.json` does not exist, the helper copies `<ContentRootPath>/config/example.json` to it, creating the application's ProgramData directory and `Config` directory as needed. Paths are not relative to the current working directory unless that is the host's content root. An existing operational file is never overwritten, merged, or dependent on the example remaining available.
 
 A successful copy **always throws `ClcConfigurationException` with `Reason == ConfigurationCreated`** to stop startup, even if the example has no placeholders. Edit the created file with deployment values, review its permissions, then restart. On subsequent calls, the helper rejects any literal, case-sensitive `REPLACE_ME` substring in the decoded file text, including comments, keys, and connection strings, with `Reason == UnreplacedPlaceholder`. This is a simple marker check, not application-specific validation or secret detection. The existing `AddClcConfiguration` and hostless reader do not enable it.
 
@@ -113,7 +131,7 @@ Use `None`/`Include` as appropriate for the consuming project and remove any con
 
 ## Application data paths and command-line discovery
 
-`ClcApplicationPaths.Resolve(ApplicationDirectoryName)` returns absolute `ApplicationDataDirectory`, `ConfigurationDirectory`, and `ConfigurationFilePath` properties using the same resolver and directory-name validation as normal startup. The application data directory is `<CommonApplicationData>/<application directory name>`, not the executable or content directory. Resolution neither reads configuration nor creates files or directories; it works before `application.json` is provisioned. It does not establish existence, access permissions, or deployment readiness. Logs, keys, ACLs, and provisioning beyond the optional starter file remain application-owned.
+`ClcApplicationPaths.Resolve(ApplicationDirectoryName)` returns absolute `ApplicationDataDirectory`, `ConfigurationDirectory`, and `ConfigurationFilePath` properties for the exact name supplied. It validates the name independently of the deployment's optional `appsettings.json`. The application data directory is `<CommonApplicationData>/<application directory name>`, not the executable or content directory. Resolution neither reads configuration nor creates files or directories; it works before `application.json` is provisioned. It does not establish existence, access permissions, or deployment readiness. Logs, keys, ACLs, and provisioning beyond the optional starter file remain application-owned.
 
 Applications can explicitly opt in with the early `TryHandle` call shown above. On `true`, return its exit code immediately, including failures. Do not put this call after logger initialization or `WebApplication.CreateBuilder`; `AddClcConfiguration` does not automatically handle commands or terminate the process.
 
@@ -123,7 +141,7 @@ Run a trusted, complete published application on the target machine:
 dotnet "<publish directory>/MyApplication.dll" --clc-appdata-directory
 ```
 
-The exact, case-sensitive standalone flag prints only the absolute application data directory plus a newline on stdout and exits successfully. It does not start the host, load configuration, or initialize logging. Extra arguments, duplicate flags, or `=value` / `:value` forms produce a fixed stderr message and exit code `2`; path resolution failure produces a fixed stderr message and exit code `1`. Other arguments are untouched and return `false` so the app can continue normally. The library never calls `Environment.Exit`.
+The exact, case-sensitive standalone flag prints only the absolute application data directory plus a newline on stdout and exits successfully. It reads only the optional application-local identity file and works from any current directory before operational configuration is provisioned. Discovery does not start the host, read the operational file, initialize logging, or create directories. Extra arguments, duplicate flags, or `=value` / `:value` forms produce a fixed stderr message and exit code `2`; an unreadable or invalid identity file or path resolution failure produces a redacted stderr diagnostic and exit code `1`. Other arguments are untouched and return `false` so the app can continue normally. The library never calls `Environment.Exit`.
 
 PowerShell can capture the result without loading .NET assemblies into its own process:
 
@@ -137,7 +155,7 @@ Use a known command-capable application version, not an older binary that may ig
 
 ## Provider behavior
 
-The file is read once during the call and parsed into an in-memory startup snapshot with no file watcher or reload. Its keys are authoritative. Existing application configuration providers are cleared, including `appsettings*.json`, environment variables, command-line application values, and providers previously added to the builder. Values for these hosting listener controls are retained from the builder as a lower-precedence source, so an `application.json` entry with the same key remains authoritative:
+The selected ProgramData `application.json` is read once during initialization and parsed into an in-memory startup snapshot with no file watcher or reload. Its keys are authoritative. Existing application configuration providers are cleared, including `appsettings*.json`, environment variables, command-line application values, and providers previously added to the builder. Values for these hosting listener controls are retained from the builder as a lower-precedence source, so an `application.json` entry with the same key remains authoritative:
 
 - `urls`
 - `http_ports`
@@ -187,7 +205,7 @@ catch (ClcConfigurationException error)
 }
 ```
 
-`Load("clc-ssrs-web")` reads the conventional CommonApplicationData path; `LoadFromFile` accepts an explicit absolute path for the existing deployment validation flow and parser tests. Both return an in-memory snapshot. The example's `DatabaseOptions`, validation method, and response methods are application-owned; the library does not validate application sections, database access, key compatibility, or configuration revisions.
+`Load("clc-ssrs-web")` reads the conventional CommonApplicationData path for that explicit name. Neither reader method inspects the calling tool's `appsettings.json`. Run the target application's discovery command first and use its result to construct the path for validation. `LoadFromFile` accepts an explicit absolute path for the existing deployment validation flow and parser tests. Both return an in-memory snapshot. The example's `DatabaseOptions`, validation method, and response methods are application-owned; the library does not validate application sections, database access, key compatibility, or configuration revisions.
 
 This operation does not construct a web host, start listeners or background services, initialize logging, generate keys, or modify files. It checks the file under the caller's identity. A successful check does not prove that the IIS identity can read or decrypt every value, or that external services are available. Normal startup still reads and validates the conventional file under the actual runtime identity.
 
@@ -235,7 +253,7 @@ public sealed class PortalFactory : WebApplicationFactory<Program>
 }
 ```
 
-`Program` is the actual entry point in the consumer executable, and `PortalStartup` is the same application composition used by production. Keep `AddClcConfiguration` in production `Program` before building the app; the test factory uses `PortalStartup` directly, so it does not call production `Program` or read the conventional operational file. If the app uses top-level statements, expose its generated entry point with `public partial class Program { }`. Add `Microsoft.AspNetCore.Mvc.Testing` to the consumer test project. `AddClcConfiguration` remains source-compatible and has no path override.
+`Program` is the actual entry point in the consumer executable, and `PortalStartup` is the same application composition used by production. Keep `AddClcConfiguration` in production `Program` before building the app; the test factory uses `PortalStartup` directly, so it does not call production `Program` or read the conventional operational file. If the app uses top-level statements, expose its generated entry point with `public partial class Program { }`. Add `Microsoft.AspNetCore.Mvc.Testing` to the consumer test project.
 
 ## Publish guard
 
@@ -249,7 +267,7 @@ Exclude operational files in the consuming project, for example:
 </ItemGroup>
 ```
 
-Use the item's actual path and item type (`None` instead of `Content` when appropriate). Intentionally publishable examples such as `application.Example.json` and `Config/example.json` remain allowed. They must not contain deployment credentials.
+Use the item's actual path and item type (`None` instead of `Content` when appropriate). Ordinary `appsettings.json` files and intentionally publishable examples such as `application.Example.json` and `Config/example.json` remain allowed. They must not contain deployment credentials.
 
 A project with a deliberate exception can explicitly opt out:
 
@@ -261,9 +279,18 @@ A project with a deliberate exception can explicitly opt out:
 
 Only `false` disables the guard. It checks the SDK publish item list, not JSON contents, arbitrary secret files, or files copied by custom deployment steps. Use a clean publish destination: it does not remove or inspect stale files from earlier publishes. Certificate policy, deployment validation, and operational provisioning remain outside this guard.
 
+## Side-by-side deployment acceptance
+
+The deployment process must **preserve or stamp the deployment-local `appsettings.json` on every deployment**, before discovery, validation, or startup. Replacing the preview file with ordinary publish output can silently reselect the code-defined default. Clc.Configuration leaves stamping and preservation to deployment tooling.
+
+1. On a test machine, publish one command-capable application with a known default, such as `clc_api`. Copy the same output into two separate deployment directories. Set both hosts to Production.
+2. Leave the first deployment on its default. Stamp the preview deployment with the JSON above. From a third directory, run `dotnet "<absolute path to each application DLL>" --clc-appdata-directory` for each copy. Verify the reported directory names are `clc_api` and `clc_api-preview`.
+3. Under each reported directory, provision `Config/application.json` with its own harmless `DeploymentProbe` value and grant the runtime identity read access. Start each app and inspect `builder.Configuration["DeploymentProbe"]` and `builder.GetClcApplicationPaths().ApplicationDataDirectory` after initialization. Each value should identify its deployment and each path should match discovery.
+4. Redeploy the original output to both directories, preserving or reapplying the preview stamp. Repeat discovery and restart both applications. Verify the same paths and probe values.
+
 ## Build and test
 
-The focused tests cover path resolution, directory-name validation, provider authority, listener-setting retention, startup snapshots, hostless and temporary-file reads, encoding and parser boundaries, malformed escaped property names, redacted errors, disposable fixture cleanup, and package-backed public API usage. A real `WebApplicationFactory.CreateClient` integration test confirms that isolated test settings replace earlier providers while listener settings remain available; it does not create a conventional configuration file. The packed-package smoke test publishes a package-backed consumer and runs discovery and malformed-command checks as separate processes on Windows and Linux, before any conventional configuration exists. It verifies exact stdout/stderr, exit codes, and that discovery leaves the application data directory absent. It also verifies package metadata, checks the public startup extension against a unique missing path without creating it, loads a temporary JSON fixture through the hostless reader, and starts a consumer host with isolated test settings. A second packed consumer compiles/publishes the Worker sample, asserts that its runtimeconfig and dependency graph contain no ASP.NET requirement, and starts a real Generic Host hosted service using an isolated dotnet root with only Microsoft.NETCore.App installed. Publish fixtures cover default-on rejection, explicit opt-out, allowed examples, excluded operational files, case-insensitive nested names, and renamed source/output paths. Both suites run on Windows and Linux; no Windows service is installed. All test fixtures stay in temporary directories; tests do not write to machine ProgramData.
+The focused tests cover path resolution, directory-name validation, provider authority, listener-setting retention, startup snapshots, hostless and temporary-file reads, encoding and parser boundaries, malformed escaped property names, redacted errors, disposable fixture cleanup, and package-backed public API usage. A real `WebApplicationFactory.CreateClient` integration test confirms that isolated test settings replace earlier providers while listener settings remain available; it does not create a conventional configuration file. The packed-package smoke test publishes a package-backed consumer and runs discovery and malformed-command checks as separate processes on Windows and Linux, before any conventional configuration exists. It verifies exact stdout/stderr, exit codes, and that discovery leaves the application data directory absent. It also exercises identical Production deployments before and after restamping the preview override, compares discovery with each builder's recorded paths using an isolated operational root, verifies package metadata, checks the public startup extension against a unique missing path without creating it, loads a temporary JSON fixture through the hostless reader, and starts a consumer host with isolated test settings. A second packed consumer compiles/publishes the Worker sample, asserts that its runtimeconfig and dependency graph contain no ASP.NET requirement, and starts a real Generic Host hosted service using an isolated dotnet root with only Microsoft.NETCore.App installed. Publish fixtures cover default-on rejection, explicit opt-out, allowed examples, excluded operational files, case-insensitive nested names, and renamed source/output paths. Both suites run on Windows and Linux; no Windows service is installed. All test fixtures stay in temporary directories; tests do not write to machine ProgramData.
 
 ```text
 dotnet restore Clc.Configuration.slnx

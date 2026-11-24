@@ -7,13 +7,14 @@ public static class ClcConfigurationCommandLine
 
     /// <summary>Prints the application data directory for the standalone discovery command.</summary>
     /// <param name="args">The application's unchanged command-line arguments.</param>
-    /// <param name="applicationDirectoryName">The same directory name used by normal startup.</param>
+    /// <param name="applicationDirectoryName">The same default directory name used by normal startup.</param>
     /// <param name="exitCode">Zero for success or an unhandled command; 1 for resolution failure; 2 for invalid usage.</param>
     /// <param name="standardOutput">The output writer, or Console.Out when omitted.</param>
     /// <param name="standardError">The error writer, or Console.Error when omitted.</param>
     /// <returns>True when the discovery command was handled, including failures; otherwise false.</returns>
     /// <remarks>
     /// Call before logging, host construction, or other startup work, and return exitCode when true.
+    /// Reads the optional directory name from appsettings.json in AppContext.BaseDirectory before resolving paths.
     /// The library never exits the process. Unrelated arguments are neither changed nor validated.
     /// </remarks>
     public static bool TryHandle(
@@ -46,7 +47,13 @@ public static class ClcConfigurationCommandLine
         string directory;
         try
         {
-            directory = ClcApplicationPaths.Resolve(applicationDirectoryName).ApplicationDataDirectory;
+            directory = ApplicationDirectoryResolver.Resolve(applicationDirectoryName).ApplicationDataDirectory;
+        }
+        catch (ClcConfigurationException error)
+        {
+            standardError.WriteLine(error.Message);
+            exitCode = 1;
+            return true;
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or
             IOException or UnauthorizedAccessException or NotSupportedException or System.Security.SecurityException)

@@ -20,6 +20,7 @@ public sealed partial class PackageConsumerTests
         using Microsoft.AspNetCore.Builder;
         using Microsoft.AspNetCore.Hosting;
         using Microsoft.Extensions.Configuration;
+        using Microsoft.Extensions.Hosting;
 
         public static class Program
         {
@@ -31,6 +32,62 @@ public sealed partial class PackageConsumerTests
                 if (ClcConfigurationCommandLine.TryHandle(args, ApplicationDirectoryName, out var exitCode))
                 {
                     return exitCode;
+                }
+
+                if (args is ["--probe-explicit", var file])
+                {
+                    try
+                    {
+                        ClcConfigurationReader.Load(ApplicationDirectoryName);
+                        throw new InvalidOperationException("Unexpected explicit-name configuration.");
+                    }
+                    catch (ClcConfigurationException e) when (e.Reason == ClcConfigurationErrorReason.MissingFile &&
+                        e.FilePath == ClcApplicationPaths.Resolve(ApplicationDirectoryName).ConfigurationFilePath)
+                    {
+                    }
+                    Console.WriteLine(ClcConfigurationReader.LoadFromFile(ApplicationDirectoryName, file)["Deployment"]);
+                    return 0;
+                }
+
+                if (args is ["--probe-deployment", var temporaryRoot])
+                {
+                    // Set competing providers in this process only. The deployed file alone selects the directory.
+                    Environment.SetEnvironmentVariable("ClcConfiguration__ApplicationDirectoryName", "from-environment");
+                    var probe = WebApplication.CreateBuilder(new WebApplicationOptions
+                    {
+                        Args = ["--ClcConfiguration:ApplicationDirectoryName", "from-command-line"],
+                        ContentRootPath = AppContext.BaseDirectory,
+                        EnvironmentName = Environments.Production
+                    });
+                    probe.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["ClcConfiguration:ApplicationDirectoryName"] = "from-provider",
+                        ["http_ports"] = "8080"
+                    });
+
+                    // Exercise public startup against the unprovisioned machine path, then use the same
+                    // resolver and initialization with the test assembly's isolated operational root.
+                    var selected = ApplicationDirectoryResolver.Resolve(ApplicationDirectoryName, programDataRoot: temporaryRoot);
+                    try
+                    {
+                        probe.AddClcConfiguration(ApplicationDirectoryName);
+                        throw new InvalidOperationException("Unexpected machine configuration.");
+                    }
+                    catch (ClcConfigurationException e) when (e.Reason == ClcConfigurationErrorReason.MissingFile &&
+                        e.FilePath == ClcApplicationPaths.Resolve(selected.ApplicationDirectoryName).ConfigurationFilePath)
+                    {
+                    }
+
+                    ClcConfigurationBuilderExtensions.AddClcConfiguration(probe, selected);
+                    if (probe.Configuration["ConnectionStrings:LocalOnly"] != null ||
+                        probe.Configuration["ClcConfiguration:ApplicationDirectoryName"] != null ||
+                        probe.Configuration["http_ports"] != "8080")
+                    {
+                        throw new InvalidOperationException("Unexpected retained provider settings.");
+                    }
+                    Console.WriteLine(probe.GetClcApplicationPaths().ApplicationDataDirectory);
+                    Console.WriteLine(probe.Configuration["Deployment"]);
+                    return 0;
                 }
 
                 if (args.Length != 0)
@@ -152,6 +209,9 @@ public sealed partial class PackageConsumerTests
             FixtureConsumerProgram.Replace("APPLICATION_DIRECTORY_NAME_PLACEHOLDER", applicationDirectoryName));
         Assert.Equal(expectedPackageVersion, GetConsumerPackageVersion(consumerDirectory));
         var consumerProject = Path.Combine(consumerDirectory, "Clc.Configuration.Consumer.csproj");
+        File.WriteAllText(Path.Combine(consumerDirectory, "appsettings.json"), "{}");
+        File.WriteAllText(Path.Combine(consumerDirectory, "appsettings.Production.json"),
+            """{"ClcConfiguration":{"ApplicationDirectoryName":"wrong-environment-file"}}""");
         var sources = WritePackageSources(temporaryDirectory.Path, packageFeed);
 
         await RunDotnetAsync(
@@ -222,7 +282,7 @@ public sealed partial class PackageConsumerTests
                 $"-p:Version={expectedPackageVersion}", $"-p:PackageVersion={expectedPackageVersion}"
             ],
             packageCache);
-        var assembly = Path.Combine(publishDirectory, "Clc.Configuration.Consumer.dll");
+        var assembly = Path.Combine(publishDirectory, "Clc.Configuration.Tests.dll");
         var filesBefore = Directory.GetFiles(publishDirectory, "*", SearchOption.AllDirectories).Order().ToArray();
         var discovery = await RunDotnetAsync(
             temporaryDirectory.Path, [assembly, "--clc-appdata-directory"], packageCache);
@@ -249,6 +309,8 @@ public sealed partial class PackageConsumerTests
         Assert.False(File.Exists(paths.ConfigurationFilePath));
         Assert.Equal(filesBefore, Directory.GetFiles(publishDirectory, "*", SearchOption.AllDirectories).Order().ToArray());
 
+        await VerifySideBySideDeployments(temporaryDirectory.Path, assembly, applicationDirectoryName, packageCache);
+
         var runResult = await RunDotnetAsync(
             consumerDirectory,
             [
@@ -260,6 +322,62 @@ public sealed partial class PackageConsumerTests
         var output = runResult.StandardOutput + runResult.StandardError;
         Assert.Contains("Loaded packed test settings and started an isolated host.", output);
         Assert.DoesNotContain("SECRET", output);
+    }
+
+    private static async Task VerifySideBySideDeployments(string workingDirectory, string publishedAssembly,
+        string defaultName, string packageCache)
+    {
+        var publish = Path.GetDirectoryName(publishedAssembly)!;
+        var operationalRoot = Path.Combine(workingDirectory, "appdata");
+        var previewName = defaultName + "-preview";
+        var settings = $$$"""{"ClcConfiguration":{"ApplicationDirectoryName":"{{{previewName}}}"},"ConnectionStrings":{"LocalOnly":"removed"}}""";
+        File.WriteAllText(Path.Combine(workingDirectory, "appsettings.json"),
+            """{"ClcConfiguration":{"ApplicationDirectoryName":"wrong-working-directory"}}""");
+
+        // Re-copy the exact same publish output and reapply the preview stamp on each deployment.
+        for (var pass = 0; pass < 2; pass++)
+        {
+            foreach (var name in new[] { defaultName, previewName })
+            {
+                var deployment = Directory.CreateDirectory(Path.Combine(workingDirectory, name)).FullName;
+                CopyTree(publish, deployment, overwrite: true);
+                if (name == previewName)
+                {
+                    File.WriteAllText(Path.Combine(deployment, "appsettings.json"), settings);
+                }
+                var assembly = Path.Combine(deployment, Path.GetFileName(publishedAssembly));
+                var machinePaths = ClcApplicationPaths.Resolve(name);
+                var discovery = await RunDotnetAsync(workingDirectory, [assembly, "--clc-appdata-directory"], packageCache);
+                Assert.Equal(machinePaths.ApplicationDataDirectory + Environment.NewLine, discovery.StandardOutput);
+                Assert.Empty(discovery.StandardError);
+                Assert.False(Directory.Exists(machinePaths.ApplicationDataDirectory));
+
+                var isolated = ClcApplicationPaths.Resolve(name, operationalRoot);
+                if (pass == 0)
+                {
+                    Directory.CreateDirectory(isolated.ConfigurationDirectory);
+                    File.WriteAllText(isolated.ConfigurationFilePath, $$"""{"Deployment":"{{name}}"}""");
+                }
+                var startup = await RunDotnetAsync(workingDirectory, [assembly, "--probe-deployment", operationalRoot], packageCache);
+                Assert.Equal(isolated.ApplicationDataDirectory + Environment.NewLine + name + Environment.NewLine, startup.StandardOutput);
+                Assert.Empty(startup.StandardError);
+            }
+        }
+
+        var preview = Path.Combine(workingDirectory, previewName);
+        var previewAssembly = Path.Combine(preview, Path.GetFileName(publishedAssembly));
+        File.WriteAllText(Path.Combine(preview, "appsettings.json"),
+            """{"ClcConfiguration":{"ApplicationDirectoryName":"../SECRET"}}""");
+        var invalid = await RunDotnetAsync(workingDirectory, [previewAssembly, "--clc-appdata-directory"], packageCache, 1);
+        Assert.Empty(invalid.StandardOutput);
+        Assert.Contains("appsettings.json", invalid.StandardError);
+        Assert.Contains("ClcConfiguration:ApplicationDirectoryName", invalid.StandardError);
+        Assert.DoesNotContain("SECRET", invalid.StandardError);
+        // An unrelated command still reaches the explicit APIs despite the invalid local override.
+        var explicitFile = ClcApplicationPaths.Resolve(defaultName, operationalRoot).ConfigurationFilePath;
+        var unrelated = await RunDotnetAsync(workingDirectory, [previewAssembly, "--probe-explicit", explicitFile], packageCache);
+        Assert.Equal(defaultName + Environment.NewLine, unrelated.StandardOutput);
+        Assert.Empty(unrelated.StandardError);
     }
 
     private static async Task<ProcessResult> RunDotnetAsync(
@@ -424,6 +542,8 @@ public sealed partial class PackageConsumerTests
             copiedProjectPath);
 
         var project = XDocument.Load(copiedProjectPath);
+        // Use existing friend assembly access so the published fixture can initialize against a temporary root.
+        project.Root!.Element("PropertyGroup")!.Add(new XElement("AssemblyName", "Clc.Configuration.Tests"));
         var packageReference = project
             .Descendants()
             .Single(element =>
