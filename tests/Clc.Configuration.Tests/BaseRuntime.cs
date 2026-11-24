@@ -21,13 +21,13 @@ public sealed partial class PackageConsumerTests
         return host;
     }
 
-    private static void CopyTree(string source, string destination)
+    private static void CopyTree(string source, string destination, bool overwrite = false)
     {
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
             var target = Path.Combine(destination, Path.GetRelativePath(source, file));
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target);
+            File.Copy(file, target, overwrite);
         }
     }
 }

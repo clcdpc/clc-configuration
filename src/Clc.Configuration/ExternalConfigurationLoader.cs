@@ -101,56 +101,7 @@ internal static class ExternalConfigurationLoader
 
     private static Dictionary<string, string?> ReadSnapshot(string path, bool rejectPlaceholders = false)
     {
-        byte[] input;
-        try
-        {
-            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (file.Length > MaximumConfigurationBytes)
-            {
-                throw CreateError(path, ClcConfigurationErrorReason.SizeLimitExceeded);
-            }
-
-            using var buffer = new MemoryStream();
-            var chunk = new byte[8192];
-            int read;
-            while ((read = file.Read(chunk, 0, chunk.Length)) > 0)
-            {
-                if (buffer.Length + read > MaximumConfigurationBytes)
-                {
-                    throw CreateError(path, ClcConfigurationErrorReason.SizeLimitExceeded);
-                }
-
-                buffer.Write(chunk, 0, read);
-            }
-
-            input = buffer.ToArray();
-        }
-        catch (FileNotFoundException)
-        {
-            throw CreateError(path, ClcConfigurationErrorReason.MissingFile);
-        }
-        catch (DirectoryNotFoundException)
-        {
-            throw CreateError(path, ClcConfigurationErrorReason.MissingFile);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            throw CreateError(path, ClcConfigurationErrorReason.UnreadableFile);
-        }
-        catch (IOException)
-        {
-            throw CreateError(path, ClcConfigurationErrorReason.UnreadableFile);
-        }
-
-        byte[] jsonBytes;
-        try
-        {
-            jsonBytes = NormalizeJsonEncoding(input);
-        }
-        catch (DecoderFallbackException)
-        {
-            throw CreateError(path, ClcConfigurationErrorReason.InvalidEncoding);
-        }
+        var jsonBytes = ReadJsonBytes(path) ?? throw CreateError(path, ClcConfigurationErrorReason.MissingFile);
 
         // Only the bootstrap integration enables this literal, case-sensitive text check.
         // Scan the same decoded snapshot that will be parsed, including comments and keys.
@@ -159,25 +110,7 @@ internal static class ExternalConfigurationLoader
             throw CreateError(path, ClcConfigurationErrorReason.UnreplacedPlaceholder);
         }
 
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(jsonBytes, new JsonDocumentOptions
-            {
-                AllowTrailingCommas = true,
-                CommentHandling = JsonCommentHandling.Skip,
-                MaxDepth = MaximumJsonDepth
-            });
-        }
-        catch (JsonException exception)
-        {
-            var reason = IsDepthLimitFailure(exception)
-                ? ClcConfigurationErrorReason.DepthLimitExceeded
-                : ClcConfigurationErrorReason.MalformedJson;
-            throw CreateJsonError(path, reason, exception);
-        }
-
-        using (document)
+        using (var document = ParseJson(path, jsonBytes))
         {
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
@@ -217,6 +150,71 @@ internal static class ExternalConfigurationLoader
         }
 
         return configuration;
+    }
+
+    internal static byte[]? ReadJsonBytes(string path)
+    {
+        byte[] input;
+        try
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (file.Length > MaximumConfigurationBytes)
+            {
+                throw CreateError(path, ClcConfigurationErrorReason.SizeLimitExceeded);
+            }
+
+            using var buffer = new MemoryStream();
+            var chunk = new byte[8192];
+            int read;
+            while ((read = file.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                if (buffer.Length + read > MaximumConfigurationBytes)
+                {
+                    throw CreateError(path, ClcConfigurationErrorReason.SizeLimitExceeded);
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            input = buffer.ToArray();
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw CreateError(path, ClcConfigurationErrorReason.UnreadableFile);
+        }
+
+        try
+        {
+            return NormalizeJsonEncoding(input);
+        }
+        catch (DecoderFallbackException)
+        {
+            throw CreateError(path, ClcConfigurationErrorReason.InvalidEncoding);
+        }
+    }
+
+    internal static JsonDocument ParseJson(string path, byte[] jsonBytes)
+    {
+        try
+        {
+            return JsonDocument.Parse(jsonBytes, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip,
+                MaxDepth = MaximumJsonDepth
+            });
+        }
+        catch (JsonException exception)
+        {
+            var reason = IsDepthLimitFailure(exception)
+                ? ClcConfigurationErrorReason.DepthLimitExceeded
+                : ClcConfigurationErrorReason.MalformedJson;
+            throw CreateJsonError(path, reason, exception);
+        }
     }
 
     private static byte[] NormalizeJsonEncoding(byte[] input)
@@ -270,7 +268,7 @@ internal static class ExternalConfigurationLoader
         }
     }
 
-    private static string GetPropertyName(string path, JsonProperty property)
+    internal static string GetPropertyName(string path, JsonProperty property)
     {
         try
         {

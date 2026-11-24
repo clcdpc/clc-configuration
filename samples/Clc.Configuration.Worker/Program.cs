@@ -1,5 +1,6 @@
 using Clc.Configuration;
 
+// Deployments can override this default in appsettings.json beside the published DLL.
 const string applicationDirectoryName = "clc-configuration-worker";
 if (ClcConfigurationCommandLine.TryHandle(args, applicationDirectoryName, out var exitCode))
 {

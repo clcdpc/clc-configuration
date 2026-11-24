@@ -3,6 +3,8 @@ using Microsoft.Extensions.Hosting;
 namespace Clc.Configuration;
 
 /// <summary>Loads application configuration from the CLC ProgramData convention.</summary>
+/// <remarks>Startup and bootstrap resolve the optional nested ClcConfiguration.ApplicationDirectoryName
+/// from appsettings.json in AppContext.BaseDirectory before accessing the operational configuration.</remarks>
 public static class ClcConfigurationBuilderExtensions
 {
     /// <summary>Returns the application paths recorded by successful configuration initialization on this builder.</summary>
@@ -31,7 +33,7 @@ public static class ClcConfigurationBuilderExtensions
     /// </summary>
     /// <typeparam name="TBuilder">The concrete application builder type.</typeparam>
     /// <param name="builder">The web or Generic Host application builder.</param>
-    /// <param name="applicationDirectoryName">One directory name beneath OS CommonApplicationData.</param>
+    /// <param name="applicationDirectoryName">The application's default portable directory name beneath OS CommonApplicationData.</param>
     /// <param name="exampleConfigurationPath">An absolute path or a path relative to ContentRootPath; defaults to config/example.json.</param>
     /// <returns>The same builder, with the external configuration loaded.</returns>
     public static TBuilder AddClcConfigurationWithBootstrap<TBuilder>(
@@ -48,7 +50,7 @@ public static class ClcConfigurationBuilderExtensions
     /// Existing files are never overwritten. A new file must be reviewed before restarting.
     /// </summary>
     /// <param name="builder">The application host builder, before services read configuration.</param>
-    /// <param name="applicationDirectoryName">One directory name beneath OS CommonApplicationData.</param>
+    /// <param name="applicationDirectoryName">The application's default portable directory name beneath OS CommonApplicationData.</param>
     /// <param name="exampleConfigurationPath">An absolute path or a path relative to ContentRootPath; defaults to config/example.json.</param>
     /// <returns>The same builder, with the external configuration loaded.</returns>
     public static IHostApplicationBuilder AddClcConfigurationWithBootstrap(
@@ -57,17 +59,17 @@ public static class ClcConfigurationBuilderExtensions
         string? exampleConfigurationPath = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        var paths = ClcApplicationPaths.Resolve(applicationDirectoryName);
-        return AddClcConfigurationWithBootstrap(builder, applicationDirectoryName, paths, exampleConfigurationPath);
+        var paths = ApplicationDirectoryResolver.Resolve(applicationDirectoryName);
+        return AddClcConfigurationWithBootstrap(builder, paths, exampleConfigurationPath);
     }
 
     /// <summary>
     /// Replaces the builder's application configuration providers with the application's
-    /// fixed ProgramData <c>application.json</c> snapshot.
+    /// deployment-specific ProgramData <c>application.json</c> snapshot.
     /// </summary>
     /// <typeparam name="TBuilder">The concrete application builder type.</typeparam>
     /// <param name="builder">The web or Generic Host application builder.</param>
-    /// <param name="applicationDirectoryName">One directory name beneath the operating system's ProgramData directory.</param>
+    /// <param name="applicationDirectoryName">The application's default portable directory name beneath OS CommonApplicationData.</param>
     /// <returns>The same builder, with the external configuration loaded.</returns>
     public static TBuilder AddClcConfiguration<TBuilder>(
         this TBuilder builder,
@@ -82,7 +84,7 @@ public static class ClcConfigurationBuilderExtensions
     /// the same authoritative startup snapshot used by the web integration.
     /// </summary>
     /// <param name="builder">The application host builder, before services read configuration.</param>
-    /// <param name="applicationDirectoryName">One directory name beneath OS CommonApplicationData.</param>
+    /// <param name="applicationDirectoryName">The application's default portable directory name beneath OS CommonApplicationData.</param>
     /// <returns>The same builder, with the external configuration loaded.</returns>
     public static IHostApplicationBuilder AddClcConfiguration(
         this IHostApplicationBuilder builder,
@@ -90,28 +92,26 @@ public static class ClcConfigurationBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        var paths = ClcApplicationPaths.Resolve(applicationDirectoryName);
-        return AddClcConfiguration(builder, applicationDirectoryName, paths);
+        var paths = ApplicationDirectoryResolver.Resolve(applicationDirectoryName);
+        return AddClcConfiguration(builder, paths);
     }
 
     // Shared initialization paths let tests use resolved temporary paths without a public root override.
     internal static IHostApplicationBuilder AddClcConfiguration(
         IHostApplicationBuilder builder,
-        string applicationDirectoryName,
         ClcApplicationPaths paths)
     {
-        ExternalConfigurationLoader.AddFromFile(builder, applicationDirectoryName, paths.ConfigurationFilePath);
+        ExternalConfigurationLoader.AddFromFile(builder, paths.ApplicationDirectoryName, paths.ConfigurationFilePath);
         builder.Properties[typeof(ClcApplicationPaths)] = paths;
         return builder;
     }
 
     internal static IHostApplicationBuilder AddClcConfigurationWithBootstrap(
         IHostApplicationBuilder builder,
-        string applicationDirectoryName,
         ClcApplicationPaths paths,
         string? exampleConfigurationPath)
     {
-        ConfigurationBootstrap.AddFromFile(builder, applicationDirectoryName, paths.ConfigurationFilePath, exampleConfigurationPath);
+        ConfigurationBootstrap.AddFromFile(builder, paths.ApplicationDirectoryName, paths.ConfigurationFilePath, exampleConfigurationPath);
         builder.Properties[typeof(ClcApplicationPaths)] = paths;
         return builder;
     }

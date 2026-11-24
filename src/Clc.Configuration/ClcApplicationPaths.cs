@@ -8,12 +8,15 @@ public sealed class ClcApplicationPaths
         "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"
     };
 
-    private ClcApplicationPaths(string applicationDataDirectory)
+    private ClcApplicationPaths(string applicationDirectoryName, string applicationDataDirectory)
     {
+        ApplicationDirectoryName = applicationDirectoryName;
         ApplicationDataDirectory = applicationDataDirectory;
         ConfigurationDirectory = Path.Combine(applicationDataDirectory, "Config");
         ConfigurationFilePath = Path.Combine(ConfigurationDirectory, "application.json");
     }
+
+    internal string ApplicationDirectoryName { get; }
 
     /// <summary>The application's data directory beneath OS CommonApplicationData, not its executable directory.</summary>
     public string ApplicationDataDirectory { get; }
@@ -49,7 +52,7 @@ public sealed class ClcApplicationPaths
             throw new ArgumentException("The ProgramData root must be an absolute path.", nameof(programDataRoot));
         }
 
-        return new ClcApplicationPaths(Path.GetFullPath(Path.Combine(programDataRoot, applicationDirectoryName)));
+        return new ClcApplicationPaths(applicationDirectoryName, Path.GetFullPath(Path.Combine(programDataRoot, applicationDirectoryName)));
     }
 
     internal static void ValidateApplicationDirectoryName(string applicationDirectoryName)

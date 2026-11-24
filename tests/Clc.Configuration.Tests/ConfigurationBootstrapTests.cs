@@ -340,15 +340,175 @@ public sealed class ConfigurationBootstrapTests
             ClcConfigurationBuilderExtensions.AddClcConfigurationWithBootstrap((IHostApplicationBuilder)null!, "clc-test"));
     }
 
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"Other":{"ApplicationDirectoryName":"elsewhere"},"ClcConfiguration:ApplicationDirectoryName":"elsewhere"}""")]
+    [InlineData("""{"ClcConfiguration":{}}""")]
+    public void AbsentNestedPropertyUsesTheDefault(string json)
+    {
+        using var fixture = new BootstrapFixture();
+        File.WriteAllText(fixture.SettingsPath, json);
+        fixture.WriteConfiguration("{}");
+        Assert.Equal(fixture.ConfigurationPath, fixture.Load(fixture.CreateBuilder(), bootstrap: false).ConfigurationFilePath);
+    }
+
+    [Fact]
+    public void IndependentInitializationsOfTheSameDefaultKeepTheirOwnIdentity()
+    {
+        using var fixture = new BootstrapFixture();
+        var original = fixture.CreateBuilder();
+        var preview = fixture.CreateBuilder();
+        fixture.WriteConfiguration("""{"Value":"original"}""");
+        fixture.WriteConfiguration("""{"Value":"preview"}""", "preview");
+        var first = fixture.Load(original, bootstrap: false);
+        File.WriteAllText(fixture.SettingsPath, """{"ClcConfiguration":{"ApplicationDirectoryName":"preview"}}""");
+        var second = fixture.Load(preview, bootstrap: false);
+        File.Delete(fixture.SettingsPath);
+        Assert.Equal(fixture.ConfigurationPath, first.ConfigurationFilePath);
+        Assert.Equal(fixture.ResolvePaths("preview").ConfigurationFilePath, second.ConfigurationFilePath);
+        Assert.Equal("original", original.Configuration["Value"]);
+        Assert.Equal("preview", preview.Configuration["Value"]);
+        Assert.Same(first, original.GetClcApplicationPaths());
+        Assert.Same(second, preview.GetClcApplicationPaths());
+        Assert.Equal(first.ConfigurationFilePath, fixture.Load(preview, bootstrap: false).ConfigurationFilePath);
+        Assert.Equal("original", preview.Configuration["Value"]);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("\"\"")]
+    [InlineData("\"  \"")]
+    [InlineData("42")]
+    [InlineData("false")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("\"../SECRET\"")]
+    [InlineData("\"C:\\\\SECRET\"")]
+    [InlineData("\"CON.txt\"")]
+    [InlineData("\"SECRET \"")]
+    [InlineData("\"SECRET\\uDC00\"")]
+    public void InvalidOverrideCannotFallBackToPreviouslyLoadedDefault(string value)
+    {
+        using var fixture = new BootstrapFixture();
+        fixture.WriteConfiguration("""{"Value":"original"}""");
+        var builder = fixture.CreateBuilder();
+        var previous = fixture.Load(builder);
+        File.WriteAllText(fixture.SettingsPath, """{"ClcConfiguration":{"ApplicationDirectoryName":""" + value + "}}");
+        foreach (var bootstrap in new[] { true, false })
+        {
+            var error = Assert.Throws<ClcConfigurationException>(() => fixture.Load(builder, bootstrap: bootstrap));
+            Assert.Equal(ClcConfigurationErrorReason.InvalidApplicationDirectoryOverride, error.Reason);
+            Assert.Equal(fixture.SettingsPath, error.FilePath);
+            Assert.Contains("ClcConfiguration:ApplicationDirectoryName", error.Message);
+            Assert.DoesNotContain("SECRET", error.ToString());
+            Assert.Null(error.InnerException);
+            Assert.Same(previous, builder.GetClcApplicationPaths());
+            Assert.Equal("original", builder.Configuration["Value"]);
+        }
+    }
+
+    [Theory]
+    [InlineData("""{"ClcConfiguration":null}""")]
+    [InlineData("""{"ClcConfiguration":"SECRET"}""")]
+    [InlineData("""{"ClcConfiguration":[]}""")]
+    [InlineData("""{"ClcConfiguration":{},"clcConfiguration":{}}""")]
+    [InlineData("""{"ClcConfiguration":{"ApplicationDirectoryName":"SECRET","applicationDirectoryName":"SECRET"}}""")]
+    [InlineData("""{"SECRET":""", ClcConfigurationErrorReason.MalformedJson)]
+    [InlineData("[]", ClcConfigurationErrorReason.InvalidRootShape)]
+    public void InvalidSettingsStopBootstrapBeforeCreatingFiles(string json,
+        ClcConfigurationErrorReason reason = ClcConfigurationErrorReason.InvalidApplicationDirectoryOverride)
+    {
+        using var fixture = new BootstrapFixture();
+        fixture.WriteExample("{}");
+        File.WriteAllText(fixture.SettingsPath, json);
+        var error = Assert.Throws<ClcConfigurationException>(() => fixture.Load(fixture.CreateBuilder()));
+        Assert.Equal(reason, error.Reason);
+        Assert.Equal(fixture.SettingsPath, error.FilePath);
+        Assert.DoesNotContain("SECRET", error.ToString());
+        Assert.Null(error.InnerException);
+        Assert.False(File.Exists(fixture.ConfigurationPath));
+    }
+
+    [Fact]
+    public void UnreadableSettingsAreDifferentFromAnAbsentFile()
+    {
+        using var fixture = new BootstrapFixture();
+        Directory.CreateDirectory(fixture.SettingsPath);
+        var error = Assert.Throws<ClcConfigurationException>(() => fixture.Load(fixture.CreateBuilder()));
+        Assert.Equal(ClcConfigurationErrorReason.UnreadableFile, error.Reason);
+        Assert.Equal(fixture.SettingsPath, error.FilePath);
+    }
+
+    [Fact]
+    public void DanglingSettingsLinkDoesNotSelectTheDefaultOnUnix()
+    {
+        // Windows developer mode or administrative privileges would be needed to create the fixture.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var fixture = new BootstrapFixture();
+        File.CreateSymbolicLink(fixture.SettingsPath, Path.Combine(fixture.BaseDirectory, "missing.json"));
+        var error = Assert.Throws<ClcConfigurationException>(() => fixture.Load(fixture.CreateBuilder()));
+        Assert.Equal(ClcConfigurationErrorReason.UnreadableFile, error.Reason);
+        Assert.Equal(fixture.SettingsPath, error.FilePath);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void OverrideIsResolvedBeforeLoadingOrBootstrapping(bool web)
+    {
+        using var fixture = new BootstrapFixture();
+        File.WriteAllText(fixture.SettingsPath, """
+            { // Only the nested identity selects a directory.
+              "clcCONFIGURATION":{"applicationDIRECTORYname":"preview",},
+              "Logging":{"LogLevel":{"Default":"irrelevant"}},
+              "ConnectionStrings":{"Default":"local-only"},
+            }
+            """);
+        File.WriteAllText(Path.Combine(fixture.ContentRoot, "appsettings.json"),
+            """{"ClcConfiguration":{"ApplicationDirectoryName":"wrong-content-root"}}""");
+        const string example = """{"Value":"REPLACE_ME"}""";
+        fixture.WriteExample(example);
+        var builder = fixture.CreateBuilder(web);
+        Assert.Throws<ArgumentException>(() => fixture.Load(builder, applicationDirectoryName: "../invalid"));
+        var missing = Assert.Throws<ClcConfigurationException>(() => fixture.Load(builder, bootstrap: false));
+        Assert.Equal(ClcConfigurationErrorReason.MissingFile, missing.Reason);
+        var created = Assert.Throws<ClcConfigurationException>(() => fixture.Load(builder));
+        Assert.Equal(ClcConfigurationErrorReason.ConfigurationCreated, created.Reason);
+        Assert.Equal(fixture.ResolvePaths("preview").ConfigurationFilePath, created.FilePath);
+        Assert.Equal(missing.FilePath, created.FilePath);
+        Assert.Equal(example, File.ReadAllText(created.FilePath));
+        var placeholder = Assert.Throws<ClcConfigurationException>(() => fixture.Load(builder));
+        Assert.Equal(ClcConfigurationErrorReason.UnreplacedPlaceholder, placeholder.Reason);
+        Assert.False(Directory.Exists(fixture.ResolvePaths(BootstrapFixture.AppName).ApplicationDataDirectory));
+        const string operational = """{"Value":"preview","ClcConfiguration":{"ApplicationDirectoryName":"elsewhere"}}""";
+        File.WriteAllText(created.FilePath, operational);
+        Assert.Equal(created.FilePath, fixture.Load(builder).ConfigurationFilePath);
+        Assert.Equal("preview", builder.Configuration["Value"]);
+        Assert.Equal("elsewhere", builder.Configuration["ClcConfiguration:ApplicationDirectoryName"]);
+        Assert.Null(builder.Configuration["ConnectionStrings:Default"]);
+        Assert.Equal(operational, File.ReadAllText(created.FilePath));
+
+        fixture.WriteConfiguration("""{"Value":"default"}""");
+        File.Delete(created.FilePath);
+        var stillMissing = Assert.Throws<ClcConfigurationException>(() => fixture.Load(builder, bootstrap: false));
+        Assert.Equal(created.FilePath, stillMissing.FilePath);
+        Assert.Equal(created.FilePath, builder.GetClcApplicationPaths().ConfigurationFilePath);
+    }
+
     private sealed class BootstrapFixture : IDisposable
     {
         internal const string AppName = "clc-bootstrap-test";
         private readonly string root = Directory.CreateTempSubdirectory("clc-bootstrap-test-").FullName;
         internal string ContentRoot => Directory.CreateDirectory(Path.Combine(root, "content")).FullName;
+        internal string BaseDirectory => Directory.CreateDirectory(Path.Combine(root, "deployment")).FullName;
+        internal string SettingsPath => Path.Combine(BaseDirectory, "appsettings.json");
         internal string ExamplePath => Path.Combine(ContentRoot, "config", "example.json");
         internal string ConfigurationPath => ResolvePaths(AppName).ConfigurationFilePath;
 
-        private ClcApplicationPaths ResolvePaths(string applicationDirectoryName) =>
+        internal ClcApplicationPaths ResolvePaths(string applicationDirectoryName) =>
             ClcApplicationPaths.Resolve(applicationDirectoryName, Path.Combine(root, "appdata"));
 
         internal IHostApplicationBuilder CreateBuilder(bool web = false) => web
@@ -371,10 +531,10 @@ public sealed class ConfigurationBootstrapTests
         internal ClcApplicationPaths Load(IHostApplicationBuilder builder, string? example = null,
             bool bootstrap = true, string applicationDirectoryName = AppName)
         {
-            var paths = ResolvePaths(applicationDirectoryName);
+            var paths = ApplicationDirectoryResolver.Resolve(applicationDirectoryName, BaseDirectory, Path.Combine(root, "appdata"));
             var result = bootstrap
-                ? ClcConfigurationBuilderExtensions.AddClcConfigurationWithBootstrap(builder, applicationDirectoryName, paths, example)
-                : ClcConfigurationBuilderExtensions.AddClcConfiguration(builder, applicationDirectoryName, paths);
+                ? ClcConfigurationBuilderExtensions.AddClcConfigurationWithBootstrap(builder, paths, example)
+                : ClcConfigurationBuilderExtensions.AddClcConfiguration(builder, paths);
             Assert.Same(builder, result);
             return paths;
         }
